@@ -1,0 +1,17 @@
+# macOS
+.DS_Store
+
+# Build artifacts
+/build/
+/.build/
+/DerivedData/
+
+# SwiftPM / Xcode
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+.swiftpm/
+
+# Local user configuration & launch agent plist
+settings.json
+*.plist
