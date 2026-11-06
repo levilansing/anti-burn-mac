@@ -52,7 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             button.action = #selector(handleStatusItemClick(_:))
             button.target = self
-            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+            button.sendAction(on: [.leftMouseDown, .rightMouseUp])
         }
     }
 
@@ -91,6 +91,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             guard let self = self, self.panelWindow.isVisible else { return }
+            // Ignore clicks directly on the status item button so handleStatusItemClick toggles it cleanly without double-firing
+            if let button = self.statusItem.button,
+               let buttonWin = button.window {
+                let mouseScreen = NSEvent.mouseLocation
+                let btnRectScreen = buttonWin.convertToScreen(button.convert(button.bounds, to: nil))
+                if btnRectScreen.insetBy(dx: -4, dy: -4).contains(mouseScreen) {
+                    return
+                }
+            }
             self.closePanel()
         }
 
