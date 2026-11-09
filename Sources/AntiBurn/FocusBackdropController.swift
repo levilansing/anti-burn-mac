@@ -5,8 +5,6 @@ import QuartzCore
 final class FocusBackdropController {
     /// Full-screen backdrop window that ALWAYS stays at steady `maxOpacity` right below the currently focused window
     private var backdropWindows: [CGDirectDisplayID: NSWindow] = [:]
-    /// Bounded window-sized overlay used strictly during 150ms transitions to fade the incoming window (`maxOpacity -> 0`)
-    private var incomingFadeWindows: [CGDirectDisplayID: NSWindow] = [:]
     /// Bounded window-sized overlay used strictly during 150ms transitions to fade the outgoing window (`0 -> maxOpacity`)
     private var outgoingFadeWindows: [CGDirectDisplayID: NSWindow] = [:]
 
@@ -70,10 +68,8 @@ final class FocusBackdropController {
         if let k = globalKeyMonitor { NSEvent.removeMonitor(k); globalKeyMonitor = nil }
         NSWorkspace.shared.notificationCenter.removeObserver(self)
         for (_, win) in backdropWindows { win.orderOut(nil) }
-        for (_, win) in incomingFadeWindows { win.orderOut(nil) }
         for (_, win) in outgoingFadeWindows { win.orderOut(nil) }
         backdropWindows.removeAll()
-        incomingFadeWindows.removeAll()
         outgoingFadeWindows.removeAll()
         currentFocusedWID = nil
         currentFocusedPID = 0
@@ -110,7 +106,6 @@ final class FocusBackdropController {
             return
         }
 
-        // Always keep Focus Dim active at 1.0 once enabled; never drop dimming when switching or launching apps!
         targetGlobalProgress = 1.0
 
         guard let (newWID, newPID, newBounds, oldStillExists) = findFocusedWindowInfo(singleWindowOnly: settings.focusSingleWindowOnly) else {
@@ -118,7 +113,6 @@ final class FocusBackdropController {
         }
 
         guard let oldWID = currentFocusedWID else {
-            // Initial focus lock
             currentFocusedWID = newWID
             currentFocusedPID = newPID
             currentFocusedBounds = newBounds
@@ -127,20 +121,14 @@ final class FocusBackdropController {
         }
 
         if oldWID == newWID {
-            // Same window is still focused; update its bounds in case the user is dragging/resizing it
             currentFocusedBounds = newBounds
             return
         }
 
-        // Check if this is a transient child/popover window of the SAME application (e.g. Safari URL bar autocomplete popup):
-        // If it's the same PID and the previous focused window (`oldWID`) is STILL open on screen AND overlaps or contains `newBounds`,
-        // check if `oldWID` is simply the parent browser/editor window while `newWID` is a smaller child popup!
+        // Ignore transient child/autocomplete popups of the SAME application (e.g., Safari URL bar dropdown)
         if newPID == currentFocusedPID && oldStillExists {
             let oldArea = currentFocusedBounds.width * currentFocusedBounds.height
             let newArea = newBounds.width * newBounds.height
-            // If the newly created/promoted layer-0 window of the same app is smaller than 65% of the current main window
-            // and lies inside or intersects the current main window (like Safari's URL suggestions overlay),
-            // DO NOT trigger a window switch! Just keep `bWin` below `oldWID` so both the main window and its popup stay 100% bright!
             if newArea < oldArea * 0.65 && currentFocusedBounds.insetBy(dx: -40, dy: -40).intersects(newBounds) {
                 return
             }
@@ -205,17 +193,13 @@ final class FocusBackdropController {
         }
 
         let settings = AppSettings.shared
-        let maxOpacity = max(0.05, min(0.85, settings.focusBackdropDimStrength))
+        let maxOpacity = max(0.01, min(0.85, settings.focusBackdropDimStrength))
         let screens = DisplayBrightnessController.shared.targetScreens()
         let activeIDs = Set(screens.map { $0.displayID })
 
         for (id, win) in backdropWindows where !activeIDs.contains(id) {
             win.orderOut(nil)
             backdropWindows.removeValue(forKey: id)
-        }
-        for (id, win) in incomingFadeWindows where !activeIDs.contains(id) {
-            win.orderOut(nil)
-            incomingFadeWindows.removeValue(forKey: id)
         }
         for (id, win) in outgoingFadeWindows where !activeIDs.contains(id) {
             win.orderOut(nil)
@@ -233,119 +217,42 @@ final class FocusBackdropController {
             )
 
             let bWin = ensureOverlayWindow(in: &backdropWindows, id: id, frame: fullFrame, rounded: false)
-            let inWin = ensureOverlayWindow(in: &incomingFadeWindows, id: id, frame: .zero, rounded: true)
             let outWin = ensureOverlayWindow(in: &outgoingFadeWindows, id: id, frame: .zero, rounded: true)
 
             guard globalProgress > 0.002 else {
                 bWin.alphaValue = 0.0
-                inWin.alphaValue = 0.0
                 outWin.alphaValue = 0.0
                 continue
             }
 
-            // 1. Main full-screen backdrop NEVER changes its alpha during window switches or app quits!
             bWin.alphaValue = CGFloat(globalProgress * maxOpacity)
 
             guard let wid = currentFocusedWID else {
                 bWin.orderFrontRegardless()
-                inWin.alphaValue = 0.0
                 outWin.alphaValue = 0.0
                 continue
             }
 
-            if windowSwitchProgress < 0.999 {
+            if windowSwitchProgress < 0.999, outgoingWIDStillOnScreen, let oldWID = outgoingFocusedWID {
+                // Unified transition (used for BOTH overlapping and non-overlapping windows!):
+                // 1. `bWin` sits right below `oldWID` so neither `wid` nor `oldWID` is covered by `bWin`,
+                //    and the entire rest of the screen stays at constant `maxOpacity`.
+                // 2. `outWin` sits over `oldWID` (`order(.below, relativeTo: wid)`) and smoothly fades from `0 -> maxOpacity` over 150ms.
+                // 3. We NEVER cover the newly clicked window `wid` with an `inWin` overlay after it has already been promoted to the front
+                //    by macOS WindowServer (which was causing the bright -> dim -> bright flash on non-overlapping windows!).
                 let p = windowSwitchProgress
+                bWin.order(.below, relativeTo: oldWID)
 
-                if outgoingWIDStillOnScreen, let oldWID = outgoingFocusedWID {
-                    // Normal switch between two open windows (`oldWID` -> `wid`):
-                    // Keep `bWin` right below `oldWID` so neither `wid` nor `oldWID` is dimmed by `bWin` during the 150ms transition.
-                    bWin.order(.below, relativeTo: oldWID)
-
-                    if currentFocusedBounds.intersects(outgoingFocusedBounds) {
-                        inWin.alphaValue = 0.0
-                        let outAppKitRect = cgWindowRectToAppKit(outgoingFocusedBounds, primaryScreen: NSScreen.screens.first)
-                        if outWin.frame != outAppKitRect {
-                            outWin.setFrame(outAppKitRect, display: false)
-                        }
-                        outWin.order(.below, relativeTo: wid)
-                        outWin.alphaValue = CGFloat(p * maxOpacity)
-                    } else {
-                        let inAppKitRect = cgWindowRectToAppKit(currentFocusedBounds, primaryScreen: NSScreen.screens.first)
-                        if inWin.frame != inAppKitRect {
-                            inWin.setFrame(inAppKitRect, display: false)
-                        }
-                        inWin.order(.above, relativeTo: wid)
-                        inWin.alphaValue = CGFloat((1.0 - p) * maxOpacity)
-
-                        let outAppKitRect = cgWindowRectToAppKit(outgoingFocusedBounds, primaryScreen: NSScreen.screens.first)
-                        if outWin.frame != outAppKitRect {
-                            outWin.setFrame(outAppKitRect, display: false)
-                        }
-                        outWin.order(.below, relativeTo: wid)
-                        outWin.alphaValue = CGFloat(p * maxOpacity)
-                    }
-                } else {
-                    // Previous app was QUIT or its window was CLOSED (`oldWID` no longer exists on screen):
-                    bWin.order(.below, relativeTo: wid)
-                    outWin.alphaValue = 0.0
-
-                    let inAppKitRect = cgWindowRectToAppKit(currentFocusedBounds, primaryScreen: NSScreen.screens.first)
-                    if inWin.frame != inAppKitRect {
-                        inWin.setFrame(inAppKitRect, display: false)
-                    }
-                    inWin.order(.above, relativeTo: wid)
-                    inWin.alphaValue = CGFloat((1.0 - p) * maxOpacity)
+                let outAppKitRect = cgWindowRectToAppKit(outgoingFocusedBounds, primaryScreen: NSScreen.screens.first)
+                if outWin.frame != outAppKitRect {
+                    outWin.setFrame(outAppKitRect, display: false)
                 }
+                outWin.order(.below, relativeTo: wid)
+                outWin.alphaValue = CGFloat(p * maxOpacity)
             } else {
-                // Steady state: `bWin` at full `maxOpacity` right below `wid`, transition overlays hidden at alpha 0
                 bWin.order(.below, relativeTo: wid)
-                inWin.alphaValue = 0.0
                 outWin.alphaValue = 0.0
             }
-        }
-    }
-
-    private var prewarmedHoverWID: Int? = nil
-
-    private func prewarmHoveredWindowIfNeeded(windowList: [[String: Any]], isValid: ([String: Any]) -> Bool) {
-        guard windowSwitchProgress >= 0.999, let activeWID = currentFocusedWID else { return }
-        let mouseAppKit = NSEvent.mouseLocation
-        let primaryHeight = NSScreen.screens.first?.frame.height ?? 1418.0
-        let mouseCG = CGPoint(x: mouseAppKit.x, y: primaryHeight - mouseAppKit.y)
-
-        guard let hoveredEntry = windowList.first(where: { info in
-            guard isValid(info),
-                  let bounds = info[kCGWindowBounds as String] as? [String: Any],
-                  let x = bounds["X"] as? Double,
-                  let y = bounds["Y"] as? Double,
-                  let w = bounds["Width"] as? Double,
-                  let h = bounds["Height"] as? Double else {
-                return false
-            }
-            return CGRect(x: x, y: y, width: w, height: h).contains(mouseCG)
-        }),
-        let hovWID = hoveredEntry[kCGWindowNumber as String] as? Int,
-        hovWID != activeWID,
-        let boundsDict = hoveredEntry[kCGWindowBounds as String] as? [String: Any] else {
-            return
-        }
-
-        guard prewarmedHoverWID != hovWID else { return }
-        prewarmedHoverWID = hovWID
-
-        let cgRect = CGRect(
-            x: boundsDict["X"] as? Double ?? 0,
-            y: boundsDict["Y"] as? Double ?? 0,
-            width: boundsDict["Width"] as? Double ?? 0,
-            height: boundsDict["Height"] as? Double ?? 0
-        )
-        let appKitRect = cgWindowRectToAppKit(cgRect, primaryScreen: NSScreen.screens.first)
-        for (_, inWin) in incomingFadeWindows {
-            if inWin.frame != appKitRect {
-                inWin.setFrame(appKitRect, display: false)
-            }
-            inWin.alphaValue = 0.0
-            inWin.order(.above, relativeTo: hovWID)
         }
     }
 
@@ -404,7 +311,6 @@ final class FocusBackdropController {
 
         let myBackdropNums = Set(
             backdropWindows.values.map { $0.windowNumber } +
-            incomingFadeWindows.values.map { $0.windowNumber } +
             outgoingFadeWindows.values.map { $0.windowNumber }
         )
 
@@ -421,13 +327,9 @@ final class FocusBackdropController {
                 return false
             }
             let alpha = info[kCGWindowAlpha as String] as? Double ?? 1.0
-            // Ignore tiny utility/autocomplete/tooltip windows (< 220px wide or < 160px tall)
             return w >= 220 && h >= 160 && alpha > 0.15
         }
 
-        // Strict single source of truth: ONLY use the actual WindowServer z-order (`windowList.first(where: isValidStandardWindow)`)!
-        // Never mix `NSWorkspace.frontmostApplication` with `windowList` z-order, because on click they update at slightly different
-        // milliseconds, which caused `chosenPID` to bounce `Old -> New -> Old -> New` on a single click!
         guard let topStandardWin = windowList.first(where: { isValidStandardWindow($0) }),
               let topPID = topStandardWin[kCGWindowOwnerPID as String] as? pid_t else {
             return nil
@@ -458,8 +360,6 @@ final class FocusBackdropController {
                 (($0[kCGWindowAlpha as String] as? Double ?? 1.0) > 0.05)
             })
         }
-
-        prewarmHoveredWindowIfNeeded(windowList: windowList, isValid: isValidStandardWindow)
 
         return (wid, topPID, rect, oldStillExists)
     }

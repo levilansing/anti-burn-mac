@@ -176,8 +176,8 @@ struct MenuPopoverView: View {
                 sliderRow(
                     title: "Inactive Icon Dimming",
                     value: $settings.menuBarDimStrength,
-                    range: 0.05...0.90,
-                    format: { "\(Int($0 * 100))% Dimmed (\(Int((1.0 - $0) * 100))% Bright)" }
+                    range: 0.01...0.90,
+                    format: { "\(Int(($0 * 100).rounded()))% Dimmed (\(Int(((1.0 - $0) * 100).rounded()))% Bright)" }
                 )
 
                 HStack(spacing: 6) {
@@ -298,8 +298,8 @@ struct MenuPopoverView: View {
             sliderRow(
                 title: "Screen Dimming Amount",
                 value: $settings.idleDimAmount,
-                range: 0.15...0.85,
-                format: { "\(Int($0 * 100))%" }
+                range: 0.01...0.85,
+                format: { "\(Int(($0 * 100).rounded()))%" }
             )
 
             Toggle("Use Native HDR Brightness Control When in HDR", isOn: $settings.preferHardwareBrightnessInHDR)
@@ -339,20 +339,20 @@ struct MenuPopoverView: View {
                 sliderRow(
                     title: "Backdrop Dimming Opacity",
                     value: $settings.focusBackdropDimStrength,
-                    range: 0.10...0.75,
-                    format: { "\(Int($0 * 100))%" }
+                    range: 0.01...0.75,
+                    format: { "\(Int(($0 * 100).rounded()))%" }
                 )
 
                 HStack(spacing: 6) {
                     Text("Match Dim %:")
                         .font(.system(size: 10, weight: .medium))
                         .foregroundColor(.secondary)
-                    Button("Match Menu Bar (\(Int(settings.menuBarDimStrength * 100))%)") {
-                        settings.focusBackdropDimStrength = min(0.75, max(0.10, settings.menuBarDimStrength))
+                    Button("Match Menu Bar (\(Int((settings.menuBarDimStrength * 100).rounded()))%)") {
+                        settings.focusBackdropDimStrength = min(0.75, max(0.01, settings.menuBarDimStrength))
                     }
                     .controlSize(.mini)
-                    Button("Match Idle Dim (\(Int(settings.idleDimAmount * 100))%)") {
-                        settings.focusBackdropDimStrength = min(0.75, max(0.10, settings.idleDimAmount))
+                    Button("Match Idle Dim (\(Int((settings.idleDimAmount * 100).rounded()))%)") {
+                        settings.focusBackdropDimStrength = min(0.75, max(0.01, settings.idleDimAmount))
                     }
                     .controlSize(.mini)
                 }

@@ -150,7 +150,7 @@ final class IdleDimmerController {
 
     private func applyDimProgressToScreens(_ progress: Double) {
         let settings = AppSettings.shared
-        let dimFraction = max(0.05, min(0.90, settings.idleDimAmount))
+        let dimFraction = max(0.01, min(0.90, settings.idleDimAmount))
         let screens = DisplayBrightnessController.shared.targetScreens()
         let activeIDs = Set(screens.map { $0.displayID })
 
