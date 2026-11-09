@@ -46,6 +46,24 @@ final class FocusBackdropController {
             name: NSWorkspace.didActivateApplicationNotification,
             object: nil
         )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(activeAppDidChange),
+            name: NSWorkspace.didHideApplicationNotification,
+            object: nil
+        )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(activeAppDidChange),
+            name: NSWorkspace.didUnhideApplicationNotification,
+            object: nil
+        )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(activeAppDidChange),
+            name: NSWorkspace.didTerminateApplicationNotification,
+            object: nil
+        )
 
         globalMouseDownMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             DispatchQueue.main.async {
@@ -109,6 +127,16 @@ final class FocusBackdropController {
         targetGlobalProgress = 1.0
 
         guard let (newWID, newPID, newBounds, oldStillExists) = findFocusedWindowInfo(singleWindowOnly: settings.focusSingleWindowOnly) else {
+            // Every single window on screen was hidden or closed!
+            // Clear currentFocusedWID and immediately bring `bWin` to the front of the desktop so it dims the whole screen
+            // rather than staying buried behind hidden/ordered-out windows!
+            if currentFocusedWID != nil {
+                currentFocusedWID = nil
+                currentFocusedPID = 0
+                outgoingFocusedWID = nil
+                windowSwitchProgress = 1.0
+                renderBackdrops()
+            }
             return
         }
 
@@ -314,9 +342,18 @@ final class FocusBackdropController {
             outgoingFadeWindows.values.map { $0.windowNumber }
         )
 
+        // Track hidden applications so we immediately ignore windows of an app being hidden via Cmd-H!
+        // When Cmd-H is pressed, NSRunningApplication.isHidden becomes true before WindowServer finishes
+        // removing its windows from CGWindowList or moving them to the back of the z-order!
+        var hiddenPIDs = Set<pid_t>()
+        for app in NSWorkspace.shared.runningApplications where app.isHidden {
+            hiddenPIDs.insert(app.processIdentifier)
+        }
+
         func isValidStandardWindow(_ info: [String: Any]) -> Bool {
             guard let pid = info[kCGWindowOwnerPID as String] as? pid_t,
                   pid != myPID,
+                  !hiddenPIDs.contains(pid),
                   let wid = info[kCGWindowNumber as String] as? Int,
                   !myBackdropNums.contains(wid),
                   let layer = info[kCGWindowLayer as String] as? Int,
@@ -354,11 +391,21 @@ final class FocusBackdropController {
 
         let checkID = (currentFocusedWID != wid) ? currentFocusedWID : outgoingFocusedWID
         var oldStillExists = false
-        if let checkID = checkID {
-            oldStillExists = windowList.contains(where: {
-                ($0[kCGWindowNumber as String] as? Int) == checkID &&
-                (($0[kCGWindowAlpha as String] as? Double ?? 1.0) > 0.05)
-            })
+        if let checkID = checkID,
+           let oldIdx = windowList.firstIndex(where: {
+               ($0[kCGWindowNumber as String] as? Int) == checkID &&
+               isValidStandardWindow($0)
+           }),
+           let newIdx = windowList.firstIndex(where: { ($0[kCGWindowNumber as String] as? Int) == wid }) {
+            // Only order `bWin` below `oldWID` if `oldWID` is still a valid, unhidden window AND
+            // no other application's standard window sits ABOVE `oldWID` (except `wid` itself)!
+            // When an app hides (Cmd-H), WindowServer pushes `oldWID` to the back of the z-order before removing it;
+            // if we ordered `bWin` below `oldWID` while `oldWID` was at the back, `bWin` would drop behind ALL windows!
+            let intermediateStandardWindows = windowList[newIdx..<oldIdx].filter { info in
+                guard let wNum = info[kCGWindowNumber as String] as? Int else { return false }
+                return wNum != wid && wNum != checkID && isValidStandardWindow(info)
+            }
+            oldStillExists = intermediateStandardWindows.isEmpty
         }
 
         return (wid, topPID, rect, oldStillExists)
